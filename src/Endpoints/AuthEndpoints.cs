@@ -461,7 +461,7 @@ public static class AuthEndpoints
                 return Results.NotFound();
 
             var key = TotpHelper.GenerateKey();
-            var qrCodeUrl = TotpHelper.GenerateQrCodeUrl(key, username, "CustomIdp");
+            var qrCodeUrl = TotpHelper.GenerateQrCodeUrl(key, username, app.Configuration);
 
             // Update user's TOTP key
             user.TotpKey = key;
