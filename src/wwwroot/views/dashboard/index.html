@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dashboard</title>
+    <style>
+        body { font-family: Arial; max-width: 800px; margin: 40px auto; padding: 20px; }
+        .user-info { margin-bottom: 20px; }
+        dl { display: grid; grid-template-columns: 150px auto; gap: 10px; }
+        dt { font-weight: bold; }
+        dd { margin: 0; }
+    </style>
+</head>
+<body>
+    <h2>Dashboard</h2>
+    <div class="user-info">
+        <dl>
+            <dt>Username:</dt>
+            <dd id="username"></dd>
+            <dt>Name:</dt>
+            <dd><span id="firstName"></span> <span id="lastName"></span></dd>
+            <dt>Email:</dt>
+            <dd id="email"></dd>
+            <dt>Phone:</dt>
+            <dd id="phone"></dd>
+            <dt>Role:</dt>
+            <dd id="role"></dd>
+            <dt>Age:</dt>
+            <dd id="age"></dd>
+            <dt>PIN Status:</dt>
+            <dd id="pinStatus"></dd>
+            <dt>TOTP Status:</dt>
+            <dd id="totpStatus"></dd>
+            <dt>App Access:</dt>
+            <dd id="appAccess"></dd>
+        </dl>
+    </div>
+    <button onclick="window.location.href='/profile'">Edit Profile</button>
+    <button onclick="logout()">Logout</button>
+
+    <script>
+        function logout() {
+            document.cookie = 'auth_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+            window.location.href = '/login';
+        }
+
+        async function loadUserData() {
+            try {
+                const response = await fetch('/api/user-data');
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('User data received:', data);
+                    document.getElementById('username').textContent = data.username;
+                    document.getElementById('firstName').textContent = data.firstName || '';
+                    document.getElementById('lastName').textContent = data.lastName || '';
+                    document.getElementById('email').textContent = data.email;
+                    document.getElementById('phone').textContent = data.phone || 'Not set';
+                    document.getElementById('role').textContent = data.role;
+                    document.getElementById('age').textContent = data.age;
+                    document.getElementById('pinStatus').textContent = data.pin ? 'Set' : 'Not set';
+                    document.getElementById('totpStatus').textContent = data.totpEnabled ? 'Enabled' : 'Not configured';
+                    document.getElementById('appAccess').textContent = 
+                        Array.isArray(data.appAccess) ? data.appAccess.join(', ') : data.appAccess;
+                }
+            } catch (error) {
+                console.error('Error loading user data:', error);
+            }
+        }
+
+        loadUserData();
+    </script>
+</body>
+</html> 

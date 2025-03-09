@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Edit Profile</title>
+    <style>
+        body { font-family: Arial; max-width: 800px; margin: 40px auto; padding: 20px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; }
+        input { width: 100%; padding: 8px; margin-bottom: 10px; }
+        button { padding: 10px 15px; background: #007bff; color: white; border: none; cursor: pointer; margin-right: 10px; }
+        .error { color: red; margin-top: 10px; }
+        .success { color: green; margin-top: 10px; }
+        .readonly { background-color: #f5f5f5; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.4.4/build/qrcode.min.js"></script>
+</head>
+<body>
+    <form id="profileForm" onsubmit="updateProfile(event)">
+        <div class="form-group">
+            <label for="firstName">First Name:</label>
+            <input type="text" id="firstName" name="firstName">
+        </div>
+        <div class="form-group">
+            <label for="lastName">Last Name:</label>
+            <input type="text" id="lastName" name="lastName">
+        </div>
+        <div class="form-group">
+            <label for="email">Email:</label>
+            <input type="email" id="email" name="email" required>
+        </div>
+        <div class="form-group">
+            <label for="phone">Phone:</label>
+            <input type="tel" id="phone" name="phone">
+        </div>
+        <div class="form-group">
+            <label for="age">Age:</label>
+            <input type="number" id="age" name="age" required>
+        </div>
+        <div class="form-group">
+            <label for="pin">PIN:</label>
+            <input type="text" id="pin" name="pin" maxlength="4" pattern="[0-9]*">
+        </div>
+
+        <div class="form-group totp-section">
+            <h3>Two-Factor Authentication</h3>
+            <div id="totpStatus">
+                <p>Status: <span id="totpEnabledStatus">Not configured</span></p>
+                <div class="form-group">
+                    <label for="totpKeyInput">TOTP Key:</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="totpKeyInput" name="totpKey" style="flex: 1;">
+                        <button type="button" onclick="updateTotpKey()">Update Key</button>
+                        <button type="button" onclick="generateAndShowKey()">Generate Key</button>
+                    </div>
+                    <div id="qrDisplay" style="display:none; margin-top: 15px;">
+                        <p>Scan this QR code with your authenticator app:</p>
+                        <canvas id="qrcode"></canvas>
+                        <p>Or use this key: <code id="generatedKey"></code></p>
+                        <button type="button" onclick="document.getElementById('qrDisplay').style.display='none'">Close</button>
+                    </div>
+                </div>
+                <button type="button" id="setupTotpBtn" onclick="setupTotp()">Generate New Key</button>
+                <button type="button" id="disableTotpBtn" onclick="disableTotp()">Disable 2FA</button>
+            </div>
+            <div id="totpSetup" style="display:none">
+                <p>Scan this QR code with your authenticator app:</p>
+                <div id="qrcode"></div>
+                <p>Or enter this key manually: <code id="totpKey"></code></p>
+                <div class="form-group">
+                    <label for="verificationCode">Verification Code:</label>
+                    <input type="text" id="verificationCode" maxlength="6" pattern="[0-9]*">
+                    <button type="button" onclick="verifyAndEnableTotp()">Verify & Enable</button>
+                </div>
+            </div>
+        </div>
+
+        <button type="submit">Save Changes</button>
+        <button type="button" onclick="window.location.href='/dashboard'">Back to Dashboard</button>
+    </form>
+
+    <script>
+    // Add the JavaScript for profile functionality
+    async function loadUserData() {
+        try {
+            const response = await fetch('/api/user-data');
+            if (response.ok) {
+                const data = await response.json();
+                console.log('User data received:', data);
+                document.getElementById('firstName').value = data.firstName || '';
+                document.getElementById('lastName').value = data.lastName || '';
+                document.getElementById('email').value = data.email || '';
+                document.getElementById('phone').value = data.phone || '';
+                document.getElementById('age').value = data.age || '';
+                document.getElementById('pin').value = data.pin || '';
+                document.getElementById('totpKeyInput').value = data.totpKey || '';
+                document.getElementById('totpEnabledStatus').textContent = 
+                    data.totpEnabled ? 'Enabled' : 'Not configured';
+                document.getElementById('setupTotpBtn').style.display = 
+                    data.totpEnabled ? 'none' : 'inline';
+                document.getElementById('disableTotpBtn').style.display = 
+                    data.totpEnabled ? 'inline' : 'none';
+            }
+        } catch (error) {
+            console.error('Error loading user data:', error);
+        }
+    }
+
+    loadUserData();
+
+    async function setupTotp() {
+        try {
+            const response = await fetch('/generate-totp-key', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                document.getElementById('totpKey').textContent = data.key;
+                document.getElementById('totpSetup').style.display = 'block';
+                
+                // Generate QR code
+                const qrcodeDiv = document.getElementById('qrcode');
+                qrcodeDiv.innerHTML = ''; // Clear existing QR code
+                QRCode.toCanvas(qrcodeDiv, data.qrCodeUrl, function (error) {
+                    if (error) console.error(error);
+                });
+            }
+        } catch (error) {
+            console.error('Error setting up TOTP:', error);
+        }
+    }
+
+    async function verifyAndEnableTotp() {
+        const code = document.getElementById('verificationCode').value;
+        const key = document.getElementById('totpKey').textContent;
+
+        try {
+            const response = await fetch('/verify-totp', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `code=${encodeURIComponent(code)}&key=${encodeURIComponent(key)}`
+            });
+
+            if (response.ok) {
+                document.getElementById('totpSetup').style.display = 'none';
+                document.getElementById('totpEnabledStatus').textContent = 'Enabled';
+                document.getElementById('setupTotpBtn').style.display = 'none';
+                document.getElementById('disableTotpBtn').style.display = 'inline';
+                document.getElementById('totpKeyInput').value = key;
+                alert('TOTP setup successful!');
+            } else {
+                alert('Invalid verification code. Please try again.');
+            }
+        } catch (error) {
+            console.error('Error verifying TOTP:', error);
+            alert('Error verifying TOTP. Please try again.');
+        }
+    }
+
+    async function disableTotp() {
+        if (!confirm('Are you sure you want to disable two-factor authentication?')) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/disable-totp', {
+                method: 'POST'
+            });
+
+            if (response.ok) {
+                document.getElementById('totpEnabledStatus').textContent = 'Not configured';
+                document.getElementById('setupTotpBtn').style.display = 'inline';
+                document.getElementById('disableTotpBtn').style.display = 'none';
+                document.getElementById('totpKeyInput').value = '';
+                alert('Two-factor authentication has been disabled.');
+            }
+        } catch (error) {
+            console.error('Error disabling TOTP:', error);
+            alert('Error disabling TOTP. Please try again.');
+        }
+    }
+
+    async function generateAndShowKey() {
+        try {
+            const response = await fetch('/generate-totp-key', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                document.getElementById('totpKeyInput').value = data.key;
+                document.getElementById('generatedKey').textContent = data.key;
+                document.getElementById('qrDisplay').style.display = 'block';
+                
+                // Generate QR code
+                const canvas = document.getElementById('qrcode');
+                QRCode.toCanvas(canvas, data.qrCodeUrl, {
+                    width: 200,  // Set QR code size
+                    margin: 2,   // Set margin
+                    scale: 4     // Set scale for better quality
+                }, function (error) {
+                    if (error) console.error('Error generating QR code:', error);
+                });
+            }
+        } catch (error) {
+            console.error('Error generating TOTP key:', error);
+            alert('Error generating TOTP key. Please try again.');
+        }
+    }
+
+    // Add this function to handle form submission
+    async function updateProfile(event) {
+        event.preventDefault();  // Prevent default form submission
+
+        const formData = new FormData(document.getElementById('profileForm'));
+
+        try {
+            const response = await fetch('/update-profile', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                alert(result.message);  // Show success message
+                // Reload user data to show updated values
+                loadUserData();
+            } else {
+                alert('Failed to update profile');
+            }
+        } catch (error) {
+            console.error('Error updating profile:', error);
+            alert('Error updating profile');
+        }
+    }
+    </script>
+</body>
+</html> 
