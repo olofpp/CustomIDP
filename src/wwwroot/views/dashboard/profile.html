@@ -48,8 +48,7 @@
                 <div class="form-group">
                     <label for="totpKeyInput">TOTP Key:</label>
                     <div style="display: flex; gap: 10px;">
-                        <input type="text" id="totpKeyInput" name="totpKey" style="flex: 1;">
-                        <button type="button" onclick="updateTotpKey()">Update Key</button>
+                        <input type="text" id="totpKeyInput" name="totpKey" style="flex: 1;" readonly>
                         <button type="button" onclick="generateAndShowKey()">Generate Key</button>
                     </div>
                     <div id="qrDisplay" style="display:none; margin-top: 15px;">

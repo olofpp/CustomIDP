@@ -3,19 +3,19 @@
 <head>
     <title>Login</title>
     <style>
-        body { font-family: Arial; max-width: 500px; margin: 40px auto; padding: 20px; }
+        body { font-family: Arial; max-width: 400px; margin: 40px auto; padding: 20px; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; }
         input { width: 100%; padding: 8px; margin-bottom: 10px; }
         button { padding: 10px 15px; background: #007bff; color: white; border: none; cursor: pointer; }
         .error { color: red; margin-top: 10px; }
-        #totpGroup { margin-top: 15px; }
+        #totpSection { display: none; }
     </style>
 </head>
 <body>
     <h2>Login</h2>
     <div id="error" class="error"></div>
-    <form id="loginForm" onsubmit="login(event)">
+    <form id="loginForm" onsubmit="return login(event)">
         <div class="form-group">
             <label for="username">Username:</label>
             <input type="text" id="username" name="username" required>
@@ -24,9 +24,9 @@
             <label for="password">Password:</label>
             <input type="password" id="password" name="password" required>
         </div>
-        <div class="form-group" id="totpGroup" style="display:none">
+        <div id="totpSection" class="form-group">
             <label for="totpCode">Two-Factor Code:</label>
-            <input type="text" id="totpCode" name="totpCode" maxlength="6" pattern="[0-9]*">
+            <input type="text" id="totpCode" name="totp_code" maxlength="6" pattern="[0-9]*">
         </div>
         <button type="submit">Login</button>
     </form>
@@ -34,9 +34,9 @@
     <script>
         async function login(event) {
             event.preventDefault();
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            const totpCode = document.getElementById('totpCode')?.value || '';
+            const form = event.target;
+            const errorDiv = document.getElementById('error');
+            const totpSection = document.getElementById('totpSection');
             
             try {
                 const response = await fetch('/connect/token', {
@@ -44,28 +44,43 @@
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
                     },
-                    body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&totp_code=${encodeURIComponent(totpCode)}`
+                    body: new URLSearchParams({
+                        'username': form.username.value,
+                        'password': form.password.value,
+                        'totp_code': form.totp_code?.value || ''
+                    })
                 });
-                
+
                 const data = await response.json();
-                
+
                 if (response.ok) {
-                    document.cookie = `auth_token=${data.access_token}; path=/; domain=${data.domain}; max-age=${data.expires_in}; samesite=lax`;
                     window.location.href = '/dashboard';
                 } else if (response.status === 422) {
-                    if (data.error === 'totp_required') {
-                        document.getElementById('totpGroup').style.display = 'block';
-                        document.getElementById('error').textContent = 'Please enter your two-factor code';
-                        return;
+                    if (data.requireTotp) {
+                        errorDiv.textContent = data.message;
+                        totpSection.style.display = 'block';
+                        document.getElementById('totpCode').focus();
+                        return false;
+                    } else if (data.requirePasswordChange) {
+                        window.location.href = `/change-password?username=${encodeURIComponent(form.username.value)}`;
+                    } else {
+                        errorDiv.textContent = data.message;
                     }
-                    window.location.href = `/change-password?username=${encodeURIComponent(username)}`;
                 } else {
-                    document.getElementById('error').textContent = data.message || 'Invalid username or password';
+                    errorDiv.textContent = data.message || 'Login failed';
                 }
             } catch (error) {
+                errorDiv.textContent = 'An error occurred during login';
                 console.error('Login error:', error);
-                document.getElementById('error').textContent = 'An error occurred';
             }
+            return false;
+        }
+
+        // Preserve username in form if returning from password change
+        const urlParams = new URLSearchParams(window.location.search);
+        const username = urlParams.get('username');
+        if (username) {
+            document.getElementById('username').value = username;
         }
     </script>
 </body>

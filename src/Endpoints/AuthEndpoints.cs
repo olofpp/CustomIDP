@@ -6,6 +6,7 @@ using System.Text.Json;
 using OtpNet;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.AspNetCore.Http.HttpResults;
+using BCrypt.Net;
 
 public static class AuthEndpoints
 {
@@ -51,47 +52,68 @@ public static class AuthEndpoints
             var password = form["password"].ToString();
             var totpCode = form["totp_code"].ToString();
 
-            var user = users!.FirstOrDefault(u => u.Username == username);
+            Console.WriteLine($"Login attempt for user: {username}");
+            Console.WriteLine($"TOTP code provided: {!string.IsNullOrEmpty(totpCode)}");
+            if (!string.IsNullOrEmpty(totpCode))
+            {
+                Console.WriteLine($"TOTP code length: {totpCode.Length}");
+            }
 
-            // First check if user exists and password is correct
+            var user = users!.FirstOrDefault(u => u.Username == username);
             if (user == null || !PasswordHasher.VerifyPassword(password, user.HashedPassword))
             {
+                Console.WriteLine("Authentication failed: Invalid username or password");
                 return Results.Unauthorized();
             }
 
-            // Check if TOTP is enabled and validate code
+            Console.WriteLine($"User found, TOTP enabled: {user.TotpEnabled}");
+            Console.WriteLine($"Password expired: {user.PasswordExpired}");
+            Console.WriteLine($"TOTP key present: {!string.IsNullOrEmpty(user.TotpKey)}");
+
+            // Check TOTP first if enabled
             if (user.TotpEnabled)
             {
                 if (string.IsNullOrEmpty(totpCode))
                 {
-                    return Results.UnprocessableEntity(new 
-                    { 
-                        error = "totp_required",
-                        message = "TOTP verification required"
+                    Console.WriteLine("TOTP required but not provided");
+                    return Results.UnprocessableEntity(new { 
+                        message = "TOTP code required",
+                        requireTotp = true,
+                        username = username,
+                        requirePasswordChange = false  // Explicitly set to false
                     });
                 }
-
-                if (!TotpHelper.ValidateCode(user.TotpKey, totpCode))
+                
+                bool isValidTotp = TotpHelper.ValidateCode(user.TotpKey, totpCode);
+                Console.WriteLine($"TOTP validation result: {isValidTotp}");
+                
+                if (!isValidTotp)
                 {
-                    return Results.BadRequest(new 
-                    { 
-                        error = "invalid_totp",
-                        message = "Invalid TOTP code"
+                    Console.WriteLine("Invalid TOTP code provided");
+                    return Results.UnprocessableEntity(new { 
+                        message = "Invalid TOTP code",
+                        requireTotp = true,
+                        username = username,
+                        requirePasswordChange = false  // Explicitly set to false
                     });
                 }
+                Console.WriteLine("TOTP validation successful");
             }
 
-            // Then check for expired password - BEFORE generating token
-            if (user.PasswordExpired || user.PasswordLastChanged.AddDays(90) < DateTime.Now)
+            // Only check password expiration after successful TOTP validation
+            if (user.PasswordExpired)
             {
-                return Results.UnprocessableEntity(new 
-                { 
-                    error = "password_expired",
-                    message = "Password has expired. Please update your password."
+                Console.WriteLine("Password is expired");
+                return Results.UnprocessableEntity(new { 
+                    message = "Password expired", 
+                    username = username,
+                    requireTotp = false,  // Explicitly set to false
+                    requirePasswordChange = true
                 });
             }
 
-            // Only generate token if password is not expired
+            Console.WriteLine("Generating token...");
+            // Generate token
             var claims = new[]
             {
                 new Claim(ClaimTypes.Name, user.Username),
@@ -101,20 +123,28 @@ public static class AuthEndpoints
                 new Claim("app_access", JsonSerializer.Serialize(user.AppAccess))
             };
 
-            var host = app.Configuration.GetValue<string>("ASPNETCORE_URLS", "localhost:5006")
-                .Replace("http://", "")
-                .Replace("*", "localhost");
-
             var token = new JwtSecurityToken(
-                issuer: $"http://{host}",
-                audience: $"http://{host}",
+                issuer: app.Configuration["Jwt:Issuer"],
+                audience: app.Configuration["Jwt:Audience"],
                 claims: claims,
                 expires: DateTime.Now.AddHours(1),
                 signingCredentials: signingCredentials);
 
+            var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
+
+            // Set the auth cookie
+            context.Response.Cookies.Append("auth_token", tokenString, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Lax,
+                Expires = DateTime.Now.AddHours(1)
+            });
+
+            Console.WriteLine("Login successful, token generated");
             return Results.Ok(new
             {
-                access_token = new JwtSecurityTokenHandler().WriteToken(token),
+                access_token = tokenString,
                 token_type = "Bearer",
                 expires_in = 3600,
                 domain = context.Request.Host.Host,
@@ -138,8 +168,53 @@ public static class AuthEndpoints
                 return Results.Unauthorized();
             }
 
-            PasswordHasher.UpdateUserPassword(username, newPassword, users, usersFilePath);
-            return Results.Ok(new { message = "Password updated successfully" });
+            // Update the password
+            user.HashedPassword = BCrypt.Net.BCrypt.HashPassword(newPassword);
+            user.PasswordLastChanged = DateTime.UtcNow;
+            user.PasswordExpired = false;
+
+            // Save changes to file
+            var jsonOptions = new JsonSerializerOptions 
+            { 
+                WriteIndented = true,
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            };
+
+            await File.WriteAllTextAsync(usersFilePath, 
+                JsonSerializer.Serialize(users, jsonOptions));
+
+            // Generate new token and set cookie
+            var claims = new[]
+            {
+                new Claim(ClaimTypes.Name, user.Username),
+                new Claim(ClaimTypes.Email, user.Email),
+                new Claim(ClaimTypes.Role, user.Role),
+                new Claim("age", user.Age.ToString()),
+                new Claim("app_access", JsonSerializer.Serialize(user.AppAccess))
+            };
+
+            var token = new JwtSecurityToken(
+                issuer: app.Configuration["Jwt:Issuer"],
+                audience: app.Configuration["Jwt:Audience"],
+                claims: claims,
+                expires: DateTime.Now.AddHours(1),
+                signingCredentials: signingCredentials);
+
+            var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
+
+            // Set the auth cookie
+            context.Response.Cookies.Append("auth_token", tokenString, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Lax,
+                Expires = DateTime.Now.AddHours(1)
+            });
+
+            return Results.Ok(new { 
+                message = "Password updated successfully",
+                redirectUrl = "/dashboard"
+            });
         });
 
         // Admin endpoints
@@ -252,19 +327,14 @@ public static class AuthEndpoints
                 var handler = new JwtSecurityTokenHandler();
                 var token = context.Request.Cookies["auth_token"];
                 
-                // Get the host for validation
-                var host = app.Configuration.GetValue<string>("ASPNETCORE_URLS", "localhost:5006")
-                    .Replace("http://", "")
-                    .Replace("*", "localhost");
-
                 var tokenValidationParameters = new TokenValidationParameters
                 {
                     ValidateIssuer = true,
                     ValidateAudience = true,
                     ValidateLifetime = true,
                     ValidateIssuerSigningKey = true,
-                    ValidIssuer = $"http://{host}",      // Match the token issuer
-                    ValidAudience = $"http://{host}",    // Match the token audience
+                    ValidIssuer = app.Configuration["Jwt:Issuer"],      // Use configuration
+                    ValidAudience = app.Configuration["Jwt:Audience"],   // Use configuration
                     IssuerSigningKey = new X509SecurityKey(cert)
                 };
 
@@ -322,19 +392,14 @@ public static class AuthEndpoints
                 var handler = new JwtSecurityTokenHandler();
                 var token = context.Request.Cookies["auth_token"];
                 
-                // Get the host for validation - match the same parameters as other endpoints
-                var host = app.Configuration.GetValue<string>("ASPNETCORE_URLS", "localhost:5006")
-                    .Replace("http://", "")
-                    .Replace("*", "localhost");
-
                 var tokenValidationParameters = new TokenValidationParameters
                 {
                     ValidateIssuer = true,
                     ValidateAudience = true,
                     ValidateLifetime = true,
                     ValidateIssuerSigningKey = true,
-                    ValidIssuer = $"http://{host}",      // Match the token issuer
-                    ValidAudience = $"http://{host}",    // Match the token audience
+                    ValidIssuer = app.Configuration["Jwt:Issuer"],      // Use configuration
+                    ValidAudience = app.Configuration["Jwt:Audience"],   // Use configuration
                     IssuerSigningKey = new X509SecurityKey(cert)
                 };
 

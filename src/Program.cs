@@ -7,8 +7,14 @@ using System.Threading;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using System.Text.Json;
 using Microsoft.Extensions.FileProviders;
+using BCrypt.Net;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Configure to read from idp_conf folder
+builder.Configuration.SetBasePath(Directory.GetCurrentDirectory())
+    .AddJsonFile(Path.Combine("idp_conf", "appsettings.json"), optional: false)
+    .AddJsonFile(Path.Combine("idp_conf", $"appsettings.{builder.Environment.EnvironmentName}.json"), optional: true);
 
 // Add CORS policy
 builder.Services.AddCors(options =>
@@ -21,8 +27,8 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Certificate handling at startup
-var certPath = builder.Configuration["Certificate:Path"]!;
+// Update certificate path to use idp_conf folder
+var certPath = Path.Combine("idp_conf", builder.Configuration["Certificate:Path"]!);
 var certPassword = builder.Configuration["Certificate:Password"];
 
 // Use X509Certificate2 with PFX file
@@ -52,20 +58,10 @@ var signingCredentials = new SigningCredentials(securityKey, SecurityAlgorithms.
     CryptoProviderFactory = new CryptoProviderFactory { CacheSignatureProviders = false }
 };
 
-// Load users from JSON
+// Update users.json path to use idp_conf folder
+var usersFilePath = Path.Combine(Directory.GetCurrentDirectory(), "idp_conf", "users.json");
+
 var users = new List<UserData>();
-var usersFilePath = Path.Combine(Directory.GetCurrentDirectory(), "users.json");
-
-void LoadUsers()
-{
-    if (File.Exists(usersFilePath))
-    {
-        users = JsonSerializer.Deserialize<List<UserData>>(File.ReadAllText(usersFilePath))!;
-        Console.WriteLine("Users reloaded from file");
-    }
-}
-
-// Set up file watcher for users.json
 var watcher = new FileSystemWatcher(Path.GetDirectoryName(usersFilePath)!, Path.GetFileName(usersFilePath));
 watcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime;
 watcher.Changed += (sender, e) => 
@@ -76,6 +72,42 @@ watcher.Changed += (sender, e) =>
 };
 watcher.EnableRaisingEvents = true;
 
+void LoadUsers()
+{
+    if (File.Exists(usersFilePath))
+    {
+        users = JsonSerializer.Deserialize<List<UserData>>(File.ReadAllText(usersFilePath))!;
+        
+        // Check for and hash any plain text passwords
+        bool needsUpdate = false;
+        foreach (var user in users)
+        {
+            // If the password isn't a valid BCrypt hash, assume it's plain text
+            if (!user.HashedPassword.StartsWith("$2"))
+            {
+                string plainTextPassword = user.HashedPassword;
+                user.HashedPassword = BCrypt.Net.BCrypt.HashPassword(plainTextPassword);
+                needsUpdate = true;
+                Console.WriteLine($"Hashed password for user: {user.Username}");
+            }
+        }
+
+        // Save updated hashes if any were changed
+        if (needsUpdate)
+        {
+            string jsonContent = JsonSerializer.Serialize(users, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(usersFilePath, jsonContent);
+            Console.WriteLine("Updated users.json with hashed passwords");
+        }
+
+        Console.WriteLine($"Loaded {users.Count} users from file");
+    }
+    else
+    {
+        Console.WriteLine($"Users file not found at: {usersFilePath}");
+    }
+}
+
 // Initial load of users
 LoadUsers();
 
@@ -83,19 +115,14 @@ LoadUsers();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        // Get the actual host without protocol
-        var host = builder.Configuration.GetValue<string>("ASPNETCORE_URLS", "localhost:5006")
-            .Replace("http://", "")
-            .Replace("*", "localhost");
-
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            ValidIssuer = $"http://{host}",
-            ValidAudience = $"http://{host}",
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new X509SecurityKey(cert),
             RequireExpirationTime = true,
             ClockSkew = TimeSpan.Zero
@@ -106,16 +133,6 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             OnMessageReceived = context =>
             {
                 context.Token = context.Request.Cookies["auth_token"];
-                return Task.CompletedTask;
-            },
-            OnTokenValidated = context =>
-            {
-                Console.WriteLine("Token validated successfully");
-                return Task.CompletedTask;
-            },
-            OnAuthenticationFailed = context =>
-            {
-                Console.WriteLine($"Authentication failed: {context.Exception.Message}");
                 return Task.CompletedTask;
             }
         };
@@ -148,6 +165,13 @@ app.UseStaticFiles(new StaticFileOptions
     FileProvider = new PhysicalFileProvider(webRootPath),
     RequestPath = ""
 });
+
+// Ensure idp_conf directory exists
+var idpConfPath = Path.Combine(Directory.GetCurrentDirectory(), "idp_conf");
+if (!Directory.Exists(idpConfPath))
+{
+    Directory.CreateDirectory(idpConfPath);
+}
 
 app.Run();
 
